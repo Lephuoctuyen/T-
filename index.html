@@ -1,0 +1,439 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secret QR Message</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<style>
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  background: linear-gradient(135deg, #fdf2f8, #eff6ff);
+  margin: 0;
+  padding: 30px 15px;
+  color: #334155;
+}
+
+.container {
+  max-width: 480px;
+  margin: auto;
+  background: white;
+  padding: 25px;
+  border-radius: 18px;
+  box-shadow: 0 8px 30px #0001;
+}
+
+h2 {
+  text-align: center;
+  color: #7c3aed;
+}
+
+h3 {
+  color: #475569;
+}
+
+input, textarea, button {
+  width: 100%;
+  padding: 14px;
+  margin: 9px 0;
+  border-radius: 10px;
+  font-size: 15px;
+}
+
+input, textarea {
+  border: 1px solid #cbd5e1;
+}
+
+textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+button {
+  border: none;
+  background: #8b5cf6;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #7c3aed;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+#qr {
+  display: flex;
+  justify-content: center;
+  margin: 20px;
+}
+
+#result {
+  background: #f0fdf4;
+  padding: 18px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.error {
+  color: #dc2626;
+}
+
+.muted {
+  color: #64748b;
+  font-size: 13px;
+  text-align: center;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.hidden {
+  display: none;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <div class="header">
+    <h2>💌 Secret QR Message</h2>
+    <p class="muted">Một thông điệp bí mật dành riêng cho bạn</p>
+  </div>
+
+  <!-- NGƯỜI GỬI -->
+
+  <section id="creator">
+
+    <h3>✉️ Tạo thông điệp</h3>
+
+    <textarea
+      id="message"
+      placeholder="Nhập thông điệp bí mật của bạn..."
+    ></textarea>
+
+    <input
+      id="password"
+      type="password"
+      inputmode="numeric"
+      maxlength="8"
+      placeholder="Ngày sinh người nhận (DDMMYYYY)"
+    >
+
+    <p class="muted">
+      Ví dụ: 18052000
+    </p>
+
+    <button id="createBtn" onclick="createQR()">
+      🔐 Mã hóa và tạo QR
+    </button>
+
+    <div id="qr"></div>
+
+    <p id="shareInfo" class="muted"></p>
+
+    <button id="copyBtn" hidden onclick="copyLink()">
+      📋 Sao chép đường dẫn
+    </button>
+
+  </section>
+
+  <!-- NGƯỜI NHẬN -->
+
+  <section id="reader" hidden>
+
+    <div class="header">
+      <h2>🎁 A Secret Message For You</h2>
+      <p>Ai đó đã gửi cho bạn một thông điệp bí mật!</p>
+    </div>
+
+    <h3>🔓 Mở thông điệp</h3>
+
+    <p>🎂 Nhập ngày sinh của bạn để mở thông điệp nhé!</p>
+
+    <input
+      id="unlockPassword"
+      type="password"
+      inputmode="numeric"
+      maxlength="8"
+      placeholder="Ngày sinh của bạn (DDMMYYYY)"
+    >
+
+    <button onclick="decryptMessage()">
+      💌 Mở thông điệp
+    </button>
+
+    <p id="status" class="error"></p>
+
+    <div id="result" hidden></div>
+
+  </section>
+
+</div>
+
+<script>
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+let generatedLink = "";
+
+// Chuyển dữ liệu sang Base64 URL
+
+function toBase64Url(bytes) {
+  let binary = "";
+
+  bytes.forEach(b => {
+    binary += String.fromCharCode(b);
+  });
+
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+// Chuyển Base64 URL về dữ liệu gốc
+
+function fromBase64Url(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
+
+  str += "=".repeat((4 - str.length % 4) % 4);
+
+  const binary = atob(str);
+
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+// Kiểm tra ngày sinh DDMMYYYY
+
+function validBirthday(date) {
+  if (!/^\d{8}$/.test(date)) return false;
+
+  const day = Number(date.slice(0, 2));
+  const month = Number(date.slice(2, 4));
+  const year = Number(date.slice(4, 8));
+
+  const d = new Date(Date.UTC(year, month - 1, day));
+
+  return d.getUTCFullYear() === year &&
+         d.getUTCMonth() === month - 1 &&
+         d.getUTCDate() === day &&
+         year >= 1900 &&
+         year <= new Date().getFullYear();
+}
+
+// Tạo khóa AES từ ngày sinh
+
+async function deriveKey(password, salt) {
+
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: salt,
+      iterations: 600000,
+      hash: "SHA-256"
+    },
+    keyMaterial,
+    {
+      name: "AES-GCM",
+      length: 256
+    },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+// TẠO QR
+
+async function createQR() {
+
+  const message = document.getElementById("message").value;
+  const password = document.getElementById("password").value;
+  const btn = document.getElementById("createBtn");
+
+  if (!message.trim()) {
+    alert("Vui lòng nhập thông điệp!");
+    return;
+  }
+
+  if (!validBirthday(password)) {
+    alert("Ngày sinh không hợp lệ! Hãy nhập DDMMYYYY.");
+    return;
+  }
+
+  btn.disabled = true;
+
+  try {
+
+    const salt = crypto.getRandomValues(
+      new Uint8Array(16)
+    );
+
+    const iv = crypto.getRandomValues(
+      new Uint8Array(12)
+    );
+
+    const key = await deriveKey(password, salt);
+
+    const encrypted = await crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv: iv
+      },
+      key,
+      encoder.encode(message)
+    );
+
+    const payload = {
+      v: 1,
+      salt: toBase64Url(salt),
+      iv: toBase64Url(iv),
+      data: toBase64Url(new Uint8Array(encrypted))
+    };
+
+    const encodedPayload = toBase64Url(
+      encoder.encode(JSON.stringify(payload))
+    );
+
+    generatedLink =
+      location.href.split("#")[0] + "#m=" + encodedPayload;
+
+    document.getElementById("qr").innerHTML = "";
+
+    new QRCode(document.getElementById("qr"), {
+      text: generatedLink,
+      width: 240,
+      height: 240,
+      correctLevel: QRCode.CorrectLevel.M
+    });
+
+    document.getElementById("shareInfo").textContent =
+      "QR đã được tạo thành công! Hãy gửi cho người nhận.";
+
+    document.getElementById("copyBtn").hidden = false;
+
+  } catch (e) {
+
+    alert("Không thể tạo QR. Hãy kiểm tra HTTPS và thử lại.");
+
+    console.error(e);
+
+  } finally {
+
+    btn.disabled = false;
+
+  }
+}
+
+// GIẢI MÃ
+
+async function decryptMessage() {
+
+  const password =
+    document.getElementById("unlockPassword").value;
+
+  const status = document.getElementById("status");
+  const result = document.getElementById("result");
+
+  status.textContent = "";
+  result.hidden = true;
+
+  if (!validBirthday(password)) {
+    status.textContent = "Vui lòng nhập ngày sinh hợp lệ (DDMMYYYY).";
+    return;
+  }
+
+  try {
+
+    const encoded = location.hash.split("#m=")[1];
+
+    if (!encoded) {
+      throw new Error("Missing payload");
+    }
+
+    const payload = JSON.parse(
+      decoder.decode(fromBase64Url(encoded))
+    );
+
+    if (payload.v !== 1) {
+      throw new Error("Unsupported version");
+    }
+
+    const salt = fromBase64Url(payload.salt);
+    const iv = fromBase64Url(payload.iv);
+    const data = fromBase64Url(payload.data);
+
+    const key = await deriveKey(password, salt);
+
+    const decrypted = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: iv
+      },
+      key,
+      data
+    );
+
+    result.textContent = decoder.decode(decrypted);
+
+    result.hidden = false;
+
+  } catch (e) {
+
+    status.textContent =
+      "Ngày sinh không đúng hoặc dữ liệu QR không hợp lệ. Hãy thử lại nhé!";
+
+  }
+
+}
+
+// SAO CHÉP ĐƯỜNG DẪN
+
+function copyLink() {
+
+  navigator.clipboard.writeText(generatedLink)
+    .then(() => alert("Đã sao chép đường dẫn!"))
+    .catch(() => alert("Không thể sao chép đường dẫn."));
+
+}
+
+// TỰ ĐỘNG CHUYỂN SANG GIAO DIỆN NGƯỜI NHẬN
+
+if (location.hash.startsWith("#m=")) {
+
+  document.getElementById("creator").hidden = true;
+
+  document.getElementById("reader").hidden = false;
+
+}
+
+</script>
+
+</body>
+</html>
